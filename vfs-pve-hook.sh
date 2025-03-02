@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+LOGLEVEL="DEBUG"
+DEFAULT_VFS_LOGLEVEL="info"
+
+VIRTIOFS_EXE="/usr/libexec/virtiofsd"
+SOCKET_DIR="/run/virtiofsd"
+
 
 log() {
     local level=$1
@@ -67,17 +73,17 @@ get_config() {
     # In those variables, data will be stored
 
     # Read paths and replace commas with spaces
-    local paths=$(get_section_value "$vmid" paths | sed 's/, /;/g')
+    local paths=$(get_section_value "$VMID" paths | sed 's/, /;/g')
     if [ -z "$paths" ]; then
-        log ERROR "No configuration for vm: '$vmid'. Exiting..."
+        log ERROR "No configuration for vm: '$VMID'. Exiting..."
         exit 5
     fi
 
-    local loglevel=$(get_section_value "$vmid" loglevel | sed 's/, */;/g')
+    local loglevel=$(get_section_value "$VMID" loglevel | sed 's/, */;/g')
     if [ -z "$loglevel" ]; then loglevel="$DEFAULT_VFS_LOGLEVEL"; fi
 
-    local virtiofs_args=$(get_section_value "$vmid" virtiofs_args | sed 's/, */;/g')
-    local vm_args=$(get_section_value "$vmid" vm_args)
+    local virtiofs_args=$(get_section_value "$VMID" virtiofs_args | sed 's/, */;/g')
+    local vm_args=$(get_section_value "$VMID" vm_args)
 
     # Use eval to assign values to the output variables in the caller's scope
     echo "$1=\"$paths\";$2=\"$loglevel\";$3=\"$virtiofs_args\";$4=\"$vm_args\""
@@ -101,6 +107,20 @@ restore_proxmox_conf() {
     mv $PROXMOX_CONFIG_BAK $PROXMOX_CONFIG
 }
 
+get_escaped_path(){
+    local path="$1"
+
+    local escapedpath=$(echo "$path" | sed 's/\//_/g; s/ /-/g')
+    escapedpath="${escapedpath:1}" 
+
+    echo "$escapedpath"
+}
+
+get_socket_path(){
+    local escapedpath="$1"
+    echo "$SOCKET_DIR/$VMID-$escapedpath.sock"
+}
+
 setup_args_in_proxmox_config() {
     local paths="$1"
     local vm_args="$2"
@@ -110,26 +130,25 @@ setup_args_in_proxmox_config() {
     # TODO: if backup and restore works, maybe we can also remove alltogether 
     if [ ! -z "$args_from_config" ]; then 
         # Writing args to temp 
-        echo "$args_from_config" > /run/$vmid.virtfs
+        echo "$args_from_config" > /run/$VMID.virtfs
     fi
 
     memory=$(get_key_from_proxmox_config "memory")
     # Generating object section of args:
     args="-object memory-backend-memfd,id=mem,size=${memory}M,share=on -numa node,memdev=mem"
-
     IFS=';'
     read -r -a paths <<< "$paths_all"
     for path in "${paths[@]}"; do
         log DEBUG "Processing path '$path'"
-        escapedpath=$(echo "$path" | sed 's/\//_/g; s/ /-/g')
-        escapedpath="${escapedpath:1}" 
+        escapedpath=$(get_escaped_path "$path")
         log DEBUG "Escaped path '$escapedpath'"
         # generating chardev
-        chardev="-chardev socket,id=char_${vmid}_${escapedpath},path=/run/virtiofsd/$vmid-$escapedpath.sock"
+        chardev="-chardev socket,id=char_${VMID}_${escapedpath},path=$(get_socket_path $escapedpath)"
         log DEBUG "Chardev: '$chardev'"
         # generating device
-        device="-device vhost-user-fs-pci,chardev=char_${vmid}_${escapedpath},tag=$vmid-$escapedpath"
-        log DEBUG "Device: '$chardev'"
+        local tag="$VMID-$escapedpath"
+        device="-device vhost-user-fs-pci,chardev=char_${VMID}_${escapedpath},tag=$tag"
+        log DEBUG "Device: '$device'"
         args="$args $chardev $device"
     done
 
@@ -154,7 +173,7 @@ setup_args_in_proxmox_config() {
         # Writing args to config
         sed "1s/^/args: $escaped_args\n/" -i "$PROXMOX_CONFIG"
     else
-        sed "s/^args:.*/args: $escaped_args\n/g" -i "$PROXMOX_CONFIG"
+        sed "s/^args:.*/args: $escaped_args/g" -i "$PROXMOX_CONFIG"
     fi
     log INFO "Writting to config successful."
 
@@ -184,6 +203,7 @@ setup_virtiofs_sockets() {
     local i=0
     for ((i=0; i<${#paths[@]}; i++)); do
         p="${paths[$i]}"
+        escapedpath=$(get_escaped_path "$p")
 
         if [ ! -z $loglevel ]; then 
             log DEBUG "Setting provided loglevel for all - in loop"
@@ -194,32 +214,88 @@ setup_virtiofs_sockets() {
         fi
 
         vfs_args="${virtiofs_args[$i]:-}"
+        service_name="virtiofs-$VMID-${escapedpath}"
+        socket_path="$(get_socket_path $escapedpath)"
 
-        log INFO "Paths: '$p', Loglevel: '$ll', vfsargs: '$vfs_args'"
+        mkdir -p "$SOCKET_DIR"
+        log INFO "Creating socket '$socket_path' with unit name '$service_name' for '$p' with loglevel: '$ll' and additional vfsargs: '$vfs_args'"
+        
+        local service_command="systemd-run \
+                --unit=\"$service_name\" \
+                \"$VIRTIOFS_EXE\" \
+                --log-level \"$ll\" \
+                --socket-path \"$socket_path\" \
+                --shared-dir \"$p\" \
+                --announce-submounts \
+                --inode-file-handles=mandatory"
+                
+        if [ ! -z "$vfs_args" ]; then
+            service_command="$service_command $vfs_args"
+        fi
+        set +e
+        eval "$service_command"
+            
+        log INFO "Checking if service was created"
+        systemctl --no-pager status "$service_name"
+        if [ $? -ne 0 ]; then
+            log ERROR "Can't start service. Cleaning up."
+            systemctl disable $service_name
+            systemctl reset-failed $service_name
+            log INFO "Exiting..."
+            exit 3
+        fi
+        set -e
     done
         
+}
+
+read_tags() {
+    local tags=""
+    local tags_all=$(cat "$PROXMOX_CONFIG" | grep "^args: " |  grep -o 'tag=[^ ,]*' | awk -F '=' '{print $2}')
+    mapfile -t tags < <(echo $tags_all)
+    echo $tags
+}
+
+print_helper_script_for_mnt() {
+    tags_all="$(read_tags)"
+    IFS=' '
+    read -r -a tags <<< "$tags_all"
+ 
+
+    log INFO "Printing helper guid for mounting:"
+    echo
+    echo "Tags:"
+    for tag in "${tags[@]}"; do
+        echo -e "\t- '$tag'"
+    done
+    echo
+    echo -e "To mount virtiofs mounts run in VM:"
+    echo -e "$ mount -t virtiofs <tag> <mountpoint>"
+    echo
+    echo -e "To mount from fstab edit /etc/fstab and add:"
+    echo "------------------------------------------------"
+    echo -e "<tag> <mountpoint> virtiofs defaults,nofail 0 0"
+    echo "------------------------------------------------"
+    echo
 }
 
 pre_start() {
     # Call get_config with variable names to store the results
     ret=$(get_config paths_all loglevel_all virtiofs_args_all vm_args)
-    if [ ! $? -eq 0 ]; then log ERROR "Error when getting config for '$vmid'. Exiting..."; return 1; fi;
+    if [ ! $? -eq 0 ]; then log ERROR "Error when getting config for '$VMID'. Exiting..."; return 1; fi;
     eval "$ret"
 
-    echo "paths: $paths_all"
-    echo "loglevel: $loglevel_all"
-    echo "virtiofs_args: $virtiofs_args_all"
-    echo "vm_args: $vm_args"
-
     log INFO "Setuping argument in Proxmox config"
-    setup_args_in_proxmox_config $paths_all $vm_args
+    setup_args_in_proxmox_config "$paths_all" "$vm_args"
 
     log INFO "Creating virtiofs socket(s)."
-    setup_virtiofs_sockets $paths_all $loglevel_all $virtiofs_args_all
-    
+    setup_virtiofs_sockets "$paths_all" "$loglevel_all" "$virtiofs_args_all"
 }
 
-
+post_start() {
+    print_helper_script_for_mnt
+    
+}
 
 # Example hook script for PVE guests (hookscript config option)
 # You can set this via pct/qm with
@@ -229,61 +305,66 @@ pre_start() {
 # of any storage with directories e.g.:
 # qm set 100 -hookscript local:snippets/hookscript.sh
 
-echo "GUEST HOOK: $*"
+log INFO "GUEST HOOK: $*"
 
 # First argument is the vmid
-vmid="$1"
+VMID="$1"
 
 # Second argument is the phase
 phase="$2"
 
 
-# Example usage
-CONF_FILE="./virtiofs-hook.conf"
-PROXMOX_CONFIG_DIR="."
-LOGLEVEL="DEBUG"
-PROXMOX_CONFIG="$PROXMOX_CONFIG_DIR/$vmid.conf"
-PROXMOX_CONFIG_BAK="$PROXMOX_CONFIG_DIR/$vmid.conf.bak"
-DEFAULT_VFS_LOGLEVEL="info"
+PROXMOX_CONFIG_DIR="/etc/pve/qemu-server"
+PROXMOX_CONFIG="$PROXMOX_CONFIG_DIR/$VMID.conf"
+PROXMOX_CONFIG_BAK="$PROXMOX_CONFIG_DIR/$VMID.conf.bak"
+
+RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF_FILE="$RUNTIME_DIR/vfs-pve-hook.conf"
 
 
-ret=$(get_config paths_all loglevel_all virtiofs_args_all vm_args)
-if [ ! $? -eq 0 ]; then log ERROR "Error when getting config for '$vmid'. Exiting..."; return 1; fi;
-eval "$ret"
 
-setup_virtiofs_sockets "$paths_all" "$loglevel_all" "$virtiofs_args_all"
-
-exit 0
 
 case "$phase" in
     pre-start)
         # First phase 'pre-start' will be executed before the guest
         # is started. Exiting with a code != 0 will abort the start
-        echo "$vmid is starting, doing preparations."
-        
-        # Uncomment the following lines to abort the start
-        # echo "preparations failed, aborting."
-        # exit 1
+
+        # Prestart generates args: for proxmox config and opens needed sockets
+
+        log INFO "$VMID is starting, doing preparations."
+        pre_start
+        log INFO "Prestart for $VMID successful."
         ;;
 
     post-start)
         # Second phase 'post-start' will be executed after the guest
         # successfully started.
-        echo "$vmid started successfully."
+
+        # Post start restores proxmox config back to previous conf.
+
+        log INFO "$VMID started successfully."
+        
+        post_start
+        log INFO "Configuration for $VMID restored to state before touching it."
         ;;
 
     pre-stop)
         # Third phase 'pre-stop' will be executed before stopping the guest
         # via the API. Will not be executed if the guest is stopped from
         # within e.g., with a 'poweroff'
-        echo "$vmid will be stopped."
+        
+        # Not needed.
+
         ;;
 
     post-stop)
         # Last phase 'post-stop' will be executed after the guest stopped.
         # This should even be executed in case the guest crashes or stopped
         # unexpectedly.
-        echo "$vmid stopped. Doing cleanup."
+        
+        log INFO "Restoring proxmox config."
+        restore_proxmox_conf
+        # Removes services if they still exist.
         ;;
 
     *)
