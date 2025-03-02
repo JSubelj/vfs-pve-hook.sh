@@ -1,0 +1,5 @@
+*
+!vfs-pve-hook.sh
+!.gitignore
+!README.md
+!virtiofs-hook.conf
