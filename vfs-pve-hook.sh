@@ -119,7 +119,7 @@ setup_args_in_proxmox_config() {
 
     memory=$(get_key_from_proxmox_config "memory")
     # Generating object section of args:
-    args="-object memory-backend-memfd,id=mem,size=${memory}M,share=on -numa node,memdev=mem"
+    local args="-object memory-backend-file,id=mem,size=${memory}M,mem-path=/dev/shm,share=on -numa node,memdev=mem"
     IFS=';'
     read -r -a paths <<< "$paths_all"
     for path in "${paths[@]}"; do
@@ -131,7 +131,7 @@ setup_args_in_proxmox_config() {
         log DEBUG "Chardev: '$chardev'"
         # generating device
         local tag="$VMID-$escapedpath"
-        device="-device vhost-user-fs-pci,chardev=char_${VMID}_${escapedpath},tag=$tag"
+        device="-device vhost-user-fs-pci,queue-size=1024,chardev=char_${VMID}_${escapedpath},tag=$tag"
         log DEBUG "Device: '$device'"
         args="$args $chardev $device"
     done
@@ -153,6 +153,9 @@ setup_args_in_proxmox_config() {
     #pvesh set /nodes/fangorn/qemu/100/config --args "$args"
 
     # Couldn't find any other way only in perl!
+    # LMAO skripta ki se izvede uresnice ne naloži nove config ampak ohranja staro, ker se stara ne pobriše!!!
+    # Treba je narest setup, ki setupa argumente!!
+    # vm_args ne rabjo obstajat!
     perl -e "
         use PVE::QemuServer;
         my \$conf = PVE::QemuConfig->load_config($VMID);
@@ -359,7 +362,7 @@ case "$phase" in
         # Post start restores proxmox config back to previous conf.
 
         log INFO "$VMID started successfully."
-        post_start
+        #post_start
         
         ;;
 
