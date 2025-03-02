@@ -89,24 +89,6 @@ get_config() {
     echo "$1=\"$paths\";$2=\"$loglevel\";$3=\"$virtiofs_args\";$4=\"$vm_args\""
 }
 
-backup_proxmox_conf() {
-    if [ -f "$PROXMOX_CONFIG_BAK" ]; then 
-        log ERROR "$PROXMOX_CONFIG_BAK already exist! Please check if $PROXMOX_CONFIG is as it should be and remove $PROXMOX_CONFIG_BAK!"
-        exit 1
-    fi
-
-    cp $PROXMOX_CONFIG $PROXMOX_CONFIG_BAK
-}
-
-restore_proxmox_conf() {
-    if [ ! -f "$PROXMOX_CONFIG_BAK" ]; then 
-        log ERROR "$PROXMOX_CONFIG_BAK does not exist, can't restore!"
-        exit 1
-    fi
-
-    mv $PROXMOX_CONFIG_BAK $PROXMOX_CONFIG
-}
-
 get_escaped_path(){
     local path="$1"
 
@@ -127,11 +109,13 @@ setup_args_in_proxmox_config() {
 
      # Get args from proxmox config
     args_from_config=$(get_key_from_proxmox_config "args")
-    # TODO: if backup and restore works, maybe we can also remove alltogether 
-    if [ ! -z "$args_from_config" ]; then 
-        # Writing args to temp 
-        echo "$args_from_config" > /run/$VMID.virtfs
+
+    if [ -f "$OLD_ARGS_FILE" ]; then
+        log ERROR "Old args still exist in $OLD_ARGS_FILE. Check them and check config. Something didn't happen as expected."
+        exit 6
     fi
+    log DEBUG "Args from config: $args_from_config"
+    echo "$args_from_config" > $OLD_ARGS_FILE
 
     memory=$(get_key_from_proxmox_config "memory")
     # Generating object section of args:
@@ -164,17 +148,18 @@ setup_args_in_proxmox_config() {
     prettyargs=$(echo "$args" | sed 's/ -/\n-/g; s/^-/\n-/g; s/\n/\n\t/g;' )
     log INFO "Final vm args are: $prettyargs"
 
-    log INFO "Backing up $PROXMOX_CONFIG to $PROXMOX_CONFIG_BAK"
-    backup_proxmox_conf
-
     log INFO "Writting args into proxmox config"
-    escaped_args=${args//\//\\/}
-    if [ -z "$args_from_config" ]; then 
-        # Writing args to config
-        sed "1s/^/args: $escaped_args\n/" -i "$PROXMOX_CONFIG"
-    else
-        sed "s/^args:.*/args: $escaped_args/g" -i "$PROXMOX_CONFIG"
-    fi
+
+    #pvesh set /nodes/fangorn/qemu/100/config --args "$args"
+
+    # Couldn't find any other way only in perl!
+    perl -e "
+        use PVE::QemuServer;
+        my \$conf = PVE::QemuConfig->load_config($VMID);
+        \$conf->{args} = \" $args\";
+        PVE::QemuConfig->write_config($VMID, \$conf);
+    "
+    
     log INFO "Writting to config successful."
 
 
@@ -280,11 +265,6 @@ print_helper_script_for_mnt() {
 }
 
 pre_start() {
-    # Call get_config with variable names to store the results
-    ret=$(get_config paths_all loglevel_all virtiofs_args_all vm_args)
-    if [ ! $? -eq 0 ]; then log ERROR "Error when getting config for '$VMID'. Exiting..."; return 1; fi;
-    eval "$ret"
-
     log INFO "Setuping argument in Proxmox config"
     setup_args_in_proxmox_config "$paths_all" "$vm_args"
 
@@ -292,9 +272,41 @@ pre_start() {
     setup_virtiofs_sockets "$paths_all" "$loglevel_all" "$virtiofs_args_all"
 }
 
+restore_args(){
+    local args=$(cat "$OLD_ARGS_FILE")
+
+    log INFO "Restoring args."
+    local escaped_args=${args//\//\\/}
+    log DEBUG "Args to restore: '$args'"
+    if [ -z "$args" ]; then 
+        log DEBUG "Removing current args."
+        sed "/^args:/d" -i "$PROXMOX_CONFIG"
+    else
+        log DEBUG "Replacing old args."
+        sed "s/^args:.*/args: $escaped_args/g" -i "$PROXMOX_CONFIG"
+    fi
+    rm "$OLD_ARGS_FILE"
+    log INFO "Args restored succesfully"
+}
+
 post_start() {
     print_helper_script_for_mnt
-    
+    restore_args
+}
+
+remove_virtiofs_services() {
+    IFS=';'
+    read -r -a paths <<< "$paths_all"
+
+    for ((i=0; i<${#paths[@]}; i++)); do
+        p="${paths[$i]}"
+        escapedpath=$(get_escaped_path "$p")
+        service_name="virtiofs-$VMID-${escapedpath}"
+        log INFO "Stopping, disabling and reseting failed $service_name"
+        systemctl stop $service_name
+        systemctl disable $service_name
+        systemctl reset-failed $service_name
+    done
 }
 
 # Example hook script for PVE guests (hookscript config option)
@@ -316,12 +328,16 @@ phase="$2"
 
 PROXMOX_CONFIG_DIR="/etc/pve/qemu-server"
 PROXMOX_CONFIG="$PROXMOX_CONFIG_DIR/$VMID.conf"
-PROXMOX_CONFIG_BAK="$PROXMOX_CONFIG_DIR/$VMID.conf.bak"
 
+OLD_ARGS_FILE="/run/$VMID.before_virtfs_args"
 RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONF_FILE="$RUNTIME_DIR/vfs-pve-hook.conf"
 
 
+# Call get_config with variable names to store the results
+ret=$(get_config paths_all loglevel_all virtiofs_args_all vm_args)
+if [ ! $? -eq 0 ]; then log ERROR "Error when getting config for '$VMID'. Exiting..."; return 1; fi;
+eval "$ret"
 
 
 case "$phase" in
@@ -343,9 +359,8 @@ case "$phase" in
         # Post start restores proxmox config back to previous conf.
 
         log INFO "$VMID started successfully."
-        
         post_start
-        log INFO "Configuration for $VMID restored to state before touching it."
+        
         ;;
 
     pre-stop)
@@ -361,9 +376,8 @@ case "$phase" in
         # Last phase 'post-stop' will be executed after the guest stopped.
         # This should even be executed in case the guest crashes or stopped
         # unexpectedly.
-        
-        log INFO "Restoring proxmox config."
-        restore_proxmox_conf
+        log INFO "Removing virtiofs services."
+        remove_virtiofs_services
         # Removes services if they still exist.
         ;;
 
