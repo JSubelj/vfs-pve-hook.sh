@@ -103,7 +103,12 @@ get_socket_path(){
     echo "$SOCKET_DIR/$VMID-$escapedpath.sock"
 }
 
+
 setup_args_in_proxmox_config() {
+    # Checks if args in config. If not adds them and STOPS execution! 
+    # Copies old args into <vmid>.conf.old_args
+    # If old args exist, 
+
     local paths="$1"
     local vm_args="$2"
 
@@ -156,6 +161,8 @@ setup_args_in_proxmox_config() {
     # LMAO skripta ki se izvede uresnice ne naloži nove config ampak ohranja staro, ker se stara ne pobriše!!!
     # Treba je narest setup, ki setupa argumente!!
     # vm_args ne rabjo obstajat!
+    # Mogoče pa spodnje deluje (torej upošteva args:) samo če je args: tudi v prejšni iteraciji configa. 
+    # če ne, ga ne upoštvea??
     perl -e "
         use PVE::QemuServer;
         my \$conf = PVE::QemuConfig->load_config($VMID);
