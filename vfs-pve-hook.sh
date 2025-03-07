@@ -219,6 +219,15 @@ setup_args_in_proxmox_config() {
 }
 
 
+redirect_if_not_DEBUG() {
+    # write your test however you want; this just tests if SILENT is non-empty
+    if [[ "$LOGLEVEL" == "DEBUG" ]]; then
+        "$@" 
+    else
+        "$@" > /dev/null
+    fi
+}
+
 setup_virtiofs_sockets() {
     IFS=';'
     read -r -a paths <<< "$paths_all"
@@ -267,6 +276,11 @@ setup_virtiofs_sockets() {
         if [ ! -z "$vfs_args" ]; then
             service_command="$service_command $vfs_args"
         fi
+
+        if [[ "$LOGLEVEL" != "DEBUG" ]]; then
+            service_command="$service_command > /dev/null"
+        fi
+
         set +e
         eval "$service_command"
         if [ $? -ne 0 ]; then
@@ -279,7 +293,7 @@ setup_virtiofs_sockets() {
         fi
 
         log INFO "Checking if service was created"
-        systemctl --no-pager status "$service_name" 
+        redirect_if_not_DEBUG systemctl --no-pager status "$service_name" 
         if [ $? -ne 0 ]; then
             log ERROR "Can't start service. Cleaning up."
             systemctl stop "$service_name"
