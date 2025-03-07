@@ -2,4 +2,5 @@
 !vfs-pve-hook.sh
 !.gitignore
 !README.md
-!virtiofs-hook.conf
+!vfs-pve-hook.conf
+!LICENSE
