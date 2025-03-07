@@ -62,7 +62,7 @@ You can add other args to `<vmid>.conf` and everything should work fine. The onl
 
 ## Changing env variables
 
-If you want to change variables in a script, you can create .env file in `/var/lib/vz/snippets/` and change variables that this script uses. Be careful playing with vars and not knowing what your doing can break things.
+If you want to change variables in a script, you can create `vfs-pve-hook.env˙ file in `/var/lib/vz/snippets/` and change variables that this script uses. Be careful playing with vars and not knowing what your doing can break things.
 
 Vargs that are ok to modify and their default vals:
 ```

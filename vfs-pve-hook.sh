@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-LOGLEVEL="DEBUG"
+LOGLEVEL="INFO"
 DEFAULT_VFS_LOGLEVEL="info"
 DEFAULT_NUMA="true"
 
@@ -374,14 +374,25 @@ OLD_ARGS_FILE="$PROXMOX_CONFIG_DIR/$VMID.conf.old_args"
 RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONF_FILE="$RUNTIME_DIR/vfs-pve-hook.conf"
 
-if [ -f "$RUNTIME_DIR/.env" ]; then
-    . "$RUNTIME_DIR/.env"
+if [ -f "$RUNTIME_DIR/vfs-pve-hook.env" ]; then
+    . "$RUNTIME_DIR/vfs-pve-hook.env"
 fi
 
 # Call get_config with variable names to store the results
 ret=$(get_config paths_all loglevel_all virtiofs_args_all numa)
 if [ ! $? -eq 0 ]; then log ERROR "Error when getting config for '$VMID'. Exiting..."; exit 6; fi;
 eval "$ret"
+
+log DEBUG "env vars:"
+log DEBUG "LOGLEVEL=\"$LOGLEVEL\""
+log DEBUG "DEFAULT_VFS_LOGLEVEL=\"$DEFAULT_VFS_LOGLEVEL\""
+log DEBUG "DEFAULT_NUMA=\"$DEFAULT_NUMA\""
+log DEBUG "VIRTIOFS_EXE=\"$VIRTIOFS_EXE\""
+log DEBUG "SOCKET_DIR=\"$SOCKET_DIR\""
+log DEBUG "CONF_FILE=\"$CONF_FILE\""
+log DEBUG "PROXMOX_CONFIG_DIR=\"$PROXMOX_CONFIG_DIR\""
+log DEBUG "PROXMOX_CONFIG=\"$PROXMOX_CONFIG\""
+log DEBUG "OLD_ARGS_FILE=\"$OLD_ARGS_FILE\""
 
 
 case "$phase" in
