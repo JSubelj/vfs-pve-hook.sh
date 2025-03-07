@@ -60,6 +60,28 @@ You can add other args to `<vmid>.conf` and everything should work fine. The onl
 - **3:** Failed to start VirtioFS service.
 - **5:** No configuration found for the VM.
 
+## Changing env variables
+
+If you want to change variables in a script, you can create .env file in `/var/lib/vz/snippets/` and change variables that this script uses. Be careful playing with vars and not knowing what your doing can break things.
+
+Vargs that are ok to modify and their default vals:
+```
+LOGLEVEL="DEBUG"
+DEFAULT_VFS_LOGLEVEL="info"
+DEFAULT_NUMA="true"
+
+VIRTIOFS_EXE="/usr/libexec/virtiofsd"
+SOCKET_DIR="/run/vfs-pve-hook"
+
+CONF_FILE="$RUNTIME_DIR/vfs-pve-hook.conf"
+
+# if you have some special proxmox install:
+PROXMOX_CONFIG_DIR="/etc/pve/qemu-server"
+PROXMOX_CONFIG="$PROXMOX_CONFIG_DIR/$VMID.conf"
+OLD_ARGS_FILE="$PROXMOX_CONFIG_DIR/$VMID.conf.old_args"
+
+
+```
 
 ## License
 
