@@ -166,6 +166,8 @@ setup_args_in_proxmox_config() {
         touching_args="true"
     fi
 
+    generated_chardevs=()
+    generated_devices=()
 
     IFS=';'
     read -r -a paths <<< "$paths_all"
@@ -175,6 +177,7 @@ setup_args_in_proxmox_config() {
         log DEBUG "Escaped path '$escapedpath'"
         # generating chardev
         local chardev_part_of_args="-chardev socket,id=char_${VMID}_${escapedpath},path=$(get_socket_path $escapedpath)"
+        generated_chardevs+=("$chardev_part_of_args")
         log DEBUG "Chardev: '$chardev_part_of_args'"
         if [[ "$args" != *"$chardev_part_of_args"* ]]; then
             log DEBUG "Including chardev for $path"
@@ -184,10 +187,31 @@ setup_args_in_proxmox_config() {
         # generating device
         local tag="$VMID-$escapedpath"
         local device_part_of_args="-device vhost-user-fs-pci,queue-size=1024,chardev=char_${VMID}_${escapedpath},tag=$tag"
+        generated_devices+=("$device_part_of_args")
         log DEBUG "Device: '$device_part_of_args'"
         if [[ "$args" != *"$device_part_of_args"* ]]; then
             log DEBUG "Including device for $path"
             args+=" $device_part_of_args"
+            touching_args="true"
+        fi
+    done
+
+    # TODO THIS GREP DOES NOT WORK
+    mapfile -t chardev_array < <(echo "$args" | grep -oP '-chardev socket,.*?(?=\s+-|$)')
+    # Iterate over the array
+    for chardev in "${chardev_array[@]}"; do
+        if [[ ! " ${generated_chardevs[@]} " =~ " ${chardev} " ]]; then
+            log INFO "Chardev $chardev is in arguments but not in current config. Removing it."
+            args=${args//$chardev/}
+            touching_args="true"
+        fi
+    done
+
+    mapfile -t device_array < <(echo "$args" | grep -oP '-device vhost-user-fs-pci,.*?(?=\s+-|$)')
+    for device in "${device_array[@]}"; do
+        if [[ ! " ${generated_devices[@]} " =~ " ${device} " ]]; then
+            log INFO "Device $device is in arguments but not in current config. Removing it."
+            args=${args//$device/}
             touching_args="true"
         fi
     done
