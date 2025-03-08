@@ -92,13 +92,29 @@ get_config() {
     echo "$1=\"$paths\";$2=\"$loglevel\";$3=\"$virtiofs_args\";$4=\"$numa\""
 }
 
+
 get_escaped_path(){
     local path="$1"
+    local result=""
 
-    local escapedpath=$(echo "$path" | sed 's/\//_/g; s/ /-/g')
-    escapedpath="${escapedpath:1}" 
+    # remove leading /
+    path="${path#/}"
 
-    echo "$escapedpath"
+    # Split the path into segments
+    IFS='/' read -r -a segments <<< "$path"
+    # Iterate over the segments
+    for i in "${!segments[@]}"; do
+        if [ "$i" -eq $(( ${#segments[@]} - 1 )) ]; then
+            # Last segment, leave as is
+            result+="${segments[$i]}"
+        else
+            # First character of the segment
+            # Add an underscore if it's not the last segment
+            result+="${segments[$i]:0:1}_"
+        fi
+    done
+    # cuts at last 36 characters because tag shouldn't be longer than that
+    echo ${result:${#result}<$MAX_TAG_LENGTH?0:-$MAX_TAG_LENGTH}
 }
 
 get_socket_path(){
@@ -197,7 +213,7 @@ setup_args_in_proxmox_config() {
     done
 
     # TODO THIS GREP DOES NOT WORK
-    mapfile -t chardev_array < <(echo "$args" | grep -oP '-chardev socket,.*?(?=\s+-|$)')
+    mapfile -t chardev_array < <(echo "$args" | grep -oP '\-chardev socket,.*?(?=\s+-|$)')
     # Iterate over the array
     for chardev in "${chardev_array[@]}"; do
         if [[ ! " ${generated_chardevs[@]} " =~ " ${chardev} " ]]; then
@@ -207,7 +223,7 @@ setup_args_in_proxmox_config() {
         fi
     done
 
-    mapfile -t device_array < <(echo "$args" | grep -oP '-device vhost-user-fs-pci,.*?(?=\s+-|$)')
+    mapfile -t device_array < <(echo "$args" | grep -oP '\-device vhost-user-fs-pci,.*?(?=\s+-|$)')
     for device in "${device_array[@]}"; do
         if [[ ! " ${generated_devices[@]} " =~ " ${device} " ]]; then
             log INFO "Device $device is in arguments but not in current config. Removing it."
@@ -411,6 +427,12 @@ PROXMOX_CONFIG="$PROXMOX_CONFIG_DIR/$VMID.conf"
 OLD_ARGS_FILE="$PROXMOX_CONFIG_DIR/$VMID.conf.old_args"
 RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONF_FILE="$RUNTIME_DIR/vfs-pve-hook.conf"
+
+
+MAX_TAG_LENGTH="36"
+# This is because MAX_TAG_LENGHT is used in generation of tags, but tag has then appendet "$VMID-"
+MAX_TAG_LENGTH=$((MAX_TAG_LENGTH - ${#VMID} - 1))
+
 
 if [ -f "$RUNTIME_DIR/vfs-pve-hook.env" ]; then
     . "$RUNTIME_DIR/vfs-pve-hook.env"
