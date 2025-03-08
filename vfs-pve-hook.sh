@@ -146,7 +146,7 @@ setup_args_in_proxmox_config() {
 
     local args="$args_from_config" 
 
-    local memory_part_of_args="-object memory-backend-file,id=mem,size=${memory}M,mem-path=/dev/shm,share=on"
+    local memory_part_of_args="-object memory-backend-memfd,id=mem,size=${memory}M,share=on"
     if [[ "$args" != *"$memory_part_of_args"* ]]; then
         log DEBUG "Memory part of args missing, adding to generate args"
         args+=" $memory_part_of_args"
