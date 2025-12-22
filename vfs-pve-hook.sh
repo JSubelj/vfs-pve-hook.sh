@@ -332,6 +332,8 @@ setup_virtiofs_sockets() {
             exit 3
         fi
 
+        sleep .5
+
         log INFO "Checking if service was created"
         redirect_if_not_DEBUG systemctl --no-pager status "$service_name" 
         if [ $? -ne 0 ]; then
